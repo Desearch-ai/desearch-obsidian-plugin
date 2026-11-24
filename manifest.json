@@ -1,0 +1,10 @@
+{
+  "id": "desearch-search",
+  "name": "Desearch Search",
+  "version": "0.1.0",
+  "minAppVersion": "1.15.1",
+  "description": "Search the web with Desearch and open titled source links.",
+  "author": "Desearch",
+  "authorUrl": "https://desearch.ai",
+  "isDesktopOnly": true
+}

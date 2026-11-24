@@ -64,8 +64,7 @@ const enableTimer=setInterval(()=>{
 },5000);
 try {
  for(let n=0;n<900;n++) {
-  if(process.platform==='darwin' && spawnSync('pgrep',['-x','Obsidian']).status===0) throw new Error('Close other Obsidian instances before this isolated smoke test');
-if(existsSync(output)){result=JSON.parse(readFileSync(output,'utf8'));console.log(JSON.stringify(result,null,2));break;}
+  if(existsSync(output)){result=JSON.parse(readFileSync(output,'utf8'));console.log(JSON.stringify(result,null,2));break;}
   if(child.exitCode!==null) throw new Error('Isolated Obsidian exited before smoke result');
   await new Promise(r=>setTimeout(r,100));
  }

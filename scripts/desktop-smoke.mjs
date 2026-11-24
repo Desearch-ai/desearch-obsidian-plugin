@@ -49,25 +49,68 @@ module.exports=class extends Plugin {
  }
 };`;
 writeFileSync(`${vault}/.obsidian/plugins/host-smoke/main.js`,driver);
-const child=spawn(binary,[`--user-data-dir=${profile}`,'--disable-gpu'],{env:process.env,stdio:'ignore'});
+// Give this host its own process group so cleanup cannot signal another app.
+const grouped=process.platform!=='win32';
+const child=spawn(binary,[`--user-data-dir=${profile}`,'--disable-gpu'],{env:process.env,stdio:'ignore',detached:grouped});
+let spawnError;
+child.on('error',error=>{spawnError=error;});
 let result;
 // Official CLI enables community plugins in this disposable profile only.
 let setupActive=false;
+const setupSockets=new Set();
 const enableTimer=setInterval(()=>{
  if(setupActive) return;
  setupActive=true;
  const setup=net.connect(os.homedir()+'/.obsidian-cli.sock',()=>setup.write(JSON.stringify({argv:['plugins:restrict','off'],tty:false,cwd:vault})+'\n'));
+ setupSockets.add(setup);
  const timeout=setTimeout(()=>setup.destroy(),4000);
  setup.on('data',buffer=>{if(buffer.toString().includes('Restricted mode disabled')) clearInterval(enableTimer);});
  setup.on('error',()=>{});
- setup.on('close',()=>{clearTimeout(timeout);setupActive=false;});
+ setup.on('close',()=>{clearTimeout(timeout);setupSockets.delete(setup);setupActive=false;});
 },5000);
 try {
  for(let n=0;n<900;n++) {
+  if(spawnError) throw new Error('Isolated Obsidian could not start');
   if(existsSync(output)){result=JSON.parse(readFileSync(output,'utf8'));console.log(JSON.stringify(result,null,2));break;}
   if(child.exitCode!==null) throw new Error('Isolated Obsidian exited before smoke result');
   await new Promise(r=>setTimeout(r,100));
  }
  if(!result) throw new Error('Native smoke timed out; no result file produced');
  if(!result.ok) process.exitCode=1;
-}finally{clearInterval(enableTimer);child.kill('SIGTERM');}
+}finally{
+ clearInterval(enableTimer);
+ for(const socket of setupSockets) socket.destroy();
+ const alive=()=>{
+  if(!child.pid) return false;
+  if(!grouped) return child.exitCode===null && child.signalCode===null;
+  // macOS can report EPERM, rather than ESRCH, for an empty process group.
+  const probe=spawnSync('ps',['-axo','pgid=,stat='],{encoding:'utf8'});
+  if(probe.status!==0) throw new Error('Could not verify isolated host shutdown');
+  return probe.stdout.split('\n').some(line=>{
+   const [group,state]=line.trim().split(/\s+/);
+   return Number(group)===child.pid && !state?.startsWith('Z');
+  });
+ };
+ const signal=kind=>{
+  if(!alive()) return;
+  try{if(grouped) process.kill(-child.pid,kind);else child.kill(kind);}
+  catch(error){if(error.code!=='ESRCH' && alive()) throw error;}
+ };
+ const waitUntilStopped=async(ms)=>{
+  const deadline=Date.now()+ms;
+  while(alive() && Date.now()<deadline) await new Promise(resolve=>setTimeout(resolve,50));
+  return !alive();
+ };
+ const started=Date.now();
+ signal('SIGTERM');
+ const graceful=await waitUntilStopped(5000);
+ if(!graceful) signal('SIGKILL');
+ const stopped=graceful || await waitUntilStopped(3000);
+ const shutdown={hostPid:child.pid,processGroup:grouped?child.pid:null,graceful,escalated:!graceful,stopped,elapsedMs:Date.now()-started};
+ writeFileSync(resolve(root,'shutdown.json'),JSON.stringify(shutdown,null,2));
+ console.log(JSON.stringify({shutdown}));
+ if(!stopped){
+  child.unref();
+  throw new Error('Isolated Obsidian did not stop within the shutdown deadline');
+ }
+}
